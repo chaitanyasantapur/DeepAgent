@@ -1,0 +1,14 @@
+[project]
+name = "deepagent-demo"
+version = "0.1.0"
+description = "Deep agent with Tavily web search"
+requires-python = ">=3.11"
+dependencies = [
+    "deepagents",
+    "langchain",
+    "langchain-openai",
+    "langchain-groq",
+    "ipykernel",
+    "tavily-python",
+    "python-dotenv",
+]
