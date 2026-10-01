@@ -95,15 +95,17 @@ critic: SubAgent = {
 SYNC_SUBAGENTS: list[SubAgent] = [researcher, coder, critic]
 
 
-def async_subagents() -> list[AsyncSubAgent]:
-    """Async subagent specs, enabled only when LANGGRAPH_SERVER_URL is set.
+def async_subagents(url: str | None = None) -> list[AsyncSubAgent]:
+    """Async subagent specs for the server at `url` (default: LANGGRAPH_SERVER_URL).
+
+    Returns an empty list when no URL is available.
 
     The specs point at graphs served by `langgraph dev` (see langgraph.json and
     remote_agents.py). Without a URL the SDK would try in-process ASGI transport,
     which needs the langgraph_api server app and an `ainvoke` entrypoint, so we
     require an explicit URL for a predictable setup.
     """
-    url = os.getenv("LANGGRAPH_SERVER_URL")
+    url = url or os.getenv("LANGGRAPH_SERVER_URL")
     if not url:
         return []
     return [

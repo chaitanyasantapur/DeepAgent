@@ -12,6 +12,7 @@ dependencies = [
     "tavily-python",
     "python-dotenv",
     "langchain-quickjs>=0.3.7",
+    "streamlit>=1.64.0",
 ]
 
 [dependency-groups]

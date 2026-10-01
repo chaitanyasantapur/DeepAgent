@@ -16,6 +16,29 @@ OPENAI_API_KEY=sk-...        # only needed if you switch to ChatOpenAI
 TAVILY_API_KEY=tvly-...      # https://app.tavily.com
 ```
 
+## Run the chat UI (Streamlit)
+
+```bash
+uv run streamlit run app.py
+```
+
+The sidebar follows the earlier LangGraph chatbot layout and is driven by `uiconfig.ini`:
+
+- **Configuration**: Select LLM (Groq / OpenAI), Select Model (with info caption), API Key
+  (password field, falls back to `.env`), Temperature slider.
+- **Agent options**: Answer style radio (Short answer / Full report) and feature checkboxes:
+  skills library, AGENTS.md memory, web search (with Tavily key field), code interpreter
+  (`eval`), sync subagents, async subagents (with server URL field), write a report after
+  every answer, show tool activity.
+- **Conversation**: thread selector and "New thread". Threads live in one shared
+  `MemorySaver`, so changing the model or features rebuilds the agent but keeps history.
+- **Active capabilities** and **Reports** expanders show what is loaded, tracked async
+  tasks, and let you preview or download reports from `workspace/reports/`.
+
+Tool calls (eval, searches, file reads, subagent delegation) stream into a status box
+above each answer. With sync subagents unchecked the `task` tool is still present because
+deepagents always ships a built-in general-purpose subagent.
+
 ## Run as a script
 
 ```bash
@@ -32,7 +55,8 @@ uv run jupyter lab deepagent.ipynb      # or open in VS Code and pick the kernel
 
 ## Files
 
-- `deepagent.py` - `create_deep_agent` with skills, AGENTS.md memory, `StateBackend`, `MemorySaver` checkpointer, a QuickJS `eval` tool (`CodeInterpreterMiddleware` from `langchain-quickjs`), and sync + async subagents
+- `app.py` + `uiconfig.ini` / `uiconfig.py` - Streamlit chat UI (see above)
+- `deepagent.py` - `build_agent()` factory and default agent: `create_deep_agent` with skills, AGENTS.md memory, `StateBackend`, `MemorySaver` checkpointer, a QuickJS `eval` tool (`CodeInterpreterMiddleware` from `langchain-quickjs`), and sync + async subagents
 - `common.py` - shared `internet_search` (Tavily) tool and `build_model()`
 - `subagents.py` - synchronous `SubAgent` specs (researcher, coder, critic) and async `AsyncSubAgent` specs (remote_researcher, remote_summarizer)
 - `remote_agents.py` + `langgraph.json` - the graphs served by `langgraph dev` that back the async subagents

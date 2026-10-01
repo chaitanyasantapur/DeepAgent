@@ -1,5 +1,8 @@
 """Deep agent with Tavily web search, skills, memory, a JS code interpreter,
-and a per-thread checkpointer.
+sync + async subagents, and a per-thread checkpointer.
+
+`build_agent()` is the configurable factory used by the Streamlit app
+(`app.py`); the module-level `agent` is the default build used by the CLI.
 
 Storage and context:
 
@@ -12,19 +15,18 @@ Storage and context:
   prompt; the agent reads the full SKILL.md, instructions.md, and examples.md
   with `read_file` when a task matches.
 - `memory=["/AGENTS.md"]` - injected into the system prompt as <agent_memory>.
-- `CodeInterpreterMiddleware` - a sandboxed QuickJS `eval` tool for calculations
-  and data wrangling; `internet_search` is callable from JS via
-  `tools.internetSearch(...)`.
+- `CodeInterpreterMiddleware` - a sandboxed QuickJS `eval` tool; `internet_search`
+  is callable from JS via `tools.internetSearch(...)`.
 - `subagents=[...]` - synchronous subagents (researcher, coder, critic) called
   through the `task` tool, plus asynchronous subagents (remote_researcher,
-  remote_summarizer) that run as background jobs on a LangGraph server when
-  LANGGRAPH_SERVER_URL is set. See subagents.py.
+  remote_summarizer) on a LangGraph server when a server URL is given.
 
-The `report-writer` skill is mandatory: after every answer the agent saves a
-markdown report to `/workspace/reports/` in state, and `ask()` copies it to
-`workspace/reports/` on disk.
+The `report-writer` skill is mandatory by default: after every answer the agent
+saves a markdown report to `/workspace/reports/` in state, and `ask()` /
+`save_reports()` copy it to `workspace/reports/` on disk.
 """
 
+import os
 from datetime import date
 from pathlib import Path
 
@@ -45,75 +47,145 @@ REPORTS_PATH = "/workspace/reports/"  # where the report-writer skill writes
 REPORTS_DIR = PROJECT_ROOT / "workspace" / "reports"
 REPORTS_DIR.mkdir(parents=True, exist_ok=True)
 
-def load_context_files() -> dict:
-    """Read skills/ and AGENTS.md from disk into StateBackend file entries.
+# One checkpointer for the whole process so threads survive agent rebuilds
+# (e.g. when the Streamlit sidebar changes the model or feature flags).
+checkpointer = MemorySaver()
 
-    Keys are agent-side paths ("/skills/python/SKILL.md", "/AGENTS.md"); values
-    are FileData dicts the StateBackend understands.
-    """
+
+def load_context_files(*, skills: bool = True, memory: bool = True) -> dict:
+    """Read skills/ and AGENTS.md from disk into StateBackend file entries."""
     files = {}
-    for path in sorted(SKILLS_DIR.rglob("*")):
-        if path.is_file() and not path.name.startswith("."):
-            agent_path = SKILLS_PATH + path.relative_to(SKILLS_DIR).as_posix()
-            files[agent_path] = create_file_data(path.read_text(encoding="utf-8"))
-    files[MEMORY_FILE] = create_file_data((PROJECT_ROOT / "AGENTS.md").read_text(encoding="utf-8"))
+    if skills:
+        for path in sorted(SKILLS_DIR.rglob("*")):
+            if path.is_file() and not path.name.startswith("."):
+                agent_path = SKILLS_PATH + path.relative_to(SKILLS_DIR).as_posix()
+                files[agent_path] = create_file_data(path.read_text(encoding="utf-8"))
+    if memory:
+        files[MEMORY_FILE] = create_file_data((PROJECT_ROOT / "AGENTS.md").read_text(encoding="utf-8"))
     return files
 
 
-system_prompt = f"""You are an expert researcher and engineer.
+def build_system_prompt(
+    *,
+    skills: bool = True,
+    memory: bool = True,
+    code_interpreter: bool = True,
+    web_search: bool = True,
+    sync_subagents: bool = True,
+    async_enabled: bool = False,
+    report_required: bool = True,
+    answer_style: str = "Short answer",
+) -> str:
+    parts = [f"You are an expert researcher and engineer.\n\nToday's date: {date.today().isoformat()}"]
+    if skills:
+        parts.append(
+            "You have a skills library (see the Skills System section below). Before\n"
+            "answering, check whether a skill matches the task. If it does, read its\n"
+            "SKILL.md with read_file (limit=1000) and then read the instructions.md and\n"
+            "examples.md files next to it. Follow them."
+        )
+    if web_search:
+        parts.append(
+            "You have an internet_search tool. Use it to look up current information\n"
+            "before answering factual questions, and cite your sources at the end."
+        )
+    if code_interpreter:
+        parts.append(
+            "You have an eval tool that runs JavaScript in a sandbox. Use it for\n"
+            "arithmetic, date math, parsing or transforming data"
+            + (", and for looping over\ntools.internetSearch(...) calls when you need several searches at once" if web_search else "")
+            + ". Never guess at a calculation you could run."
+        )
+    if sync_subagents or async_enabled:
+        delegation = []
+        if sync_subagents:
+            delegation.append(
+                "You can delegate with the task tool. Available subagents: researcher\n"
+                "(isolated web research), coder (Python/AWS code), critic (fork; reviews your\n"
+                "draft with full context). Delegate when a sub-problem is self-contained or\n"
+                "when two things can be researched in parallel; otherwise do it yourself."
+            )
+        if async_enabled:
+            delegation.append(
+                "Async subagent tools are present (start_async_task, check_async_task,\n"
+                "list_async_tasks). Use them for long-running research you can poll later,\n"
+                "and finish other work while they run."
+            )
+        delegation.append("Subagents never write reports; you do.")
+        parts.append("\n".join(delegation))
+    if answer_style == "Full report":
+        parts.append("Answer style: write a full, well-structured report with headings. Length is not limited.")
+    else:
+        parts.append("Answer style: short and direct, under 200 words unless the user asks for a full report.")
+    if report_required:
+        parts.append(
+            "MANDATORY FINAL STEP: after you have composed your answer and before you\n"
+            f"reply, follow the report-writer skill and save a report to {REPORTS_PATH}\n"
+            "with write_file. End your reply with the line\n"
+            f'"Report saved to {REPORTS_PATH}<file>.md".'
+        )
+    if memory:
+        parts.append(
+            "Your system prompt also ends with an <agent_memory> block loaded from\n"
+            "AGENTS.md. Treat it as standing instructions."
+        )
+    return "\n\n".join(parts)
 
-Today's date: {date.today().isoformat()}
 
-You have a skills library (see the Skills System section below). Before
-answering, check whether a skill matches the task. If it does, read its
-SKILL.md with read_file (limit=1000) and then read the instructions.md and
-examples.md files next to it. Follow them.
+def build_agent(
+    model=None,
+    *,
+    skills: bool = True,
+    memory: bool = True,
+    code_interpreter: bool = True,
+    web_search: bool = True,
+    sync_subagents: bool = True,
+    async_server_url: str | None = None,
+    report_required: bool = True,
+    answer_style: str = "Short answer",
+):
+    """Create a deep agent with the selected features. `model` defaults to build_model()."""
+    model = model or build_model()
+    tools = [internet_search] if web_search else []
+    middleware = []
+    if code_interpreter:
+        middleware.append(
+            CodeInterpreterMiddleware(
+                timeout=5.0,
+                mode="thread",  # REPL globals persist across turns of the same thread
+                ptc=["internet_search"] if web_search else None,
+            )
+        )
+    subagents = []
+    if sync_subagents:
+        subagents.extend(SYNC_SUBAGENTS)
+    async_specs = async_subagents(async_server_url) if async_server_url else []
+    subagents.extend(async_specs)
 
-You have an internet_search tool. Use it to look up current information
-before answering factual questions, and cite your sources at the end.
+    return create_deep_agent(
+        model=model,
+        tools=tools,
+        system_prompt=build_system_prompt(
+            skills=skills,
+            memory=memory,
+            code_interpreter=code_interpreter,
+            web_search=web_search,
+            sync_subagents=sync_subagents,
+            async_enabled=bool(async_specs),
+            report_required=report_required,
+            answer_style=answer_style,
+        ),
+        backend=StateBackend(),
+        checkpointer=checkpointer,
+        skills=[SKILLS_PATH] if skills else None,
+        memory=[MEMORY_FILE] if memory else None,
+        middleware=middleware,
+        subagents=subagents or None,
+    )
 
-You have an eval tool that runs JavaScript in a sandbox. Use it for
-arithmetic, date math, parsing or transforming data, and for looping over
-tools.internetSearch(...) calls when you need several searches at once.
-Never guess at a calculation you could run.
 
-You can delegate with the task tool. Available subagents: researcher
-(isolated web research), coder (Python/AWS code), critic (fork; reviews your
-draft with full context). Delegate when a sub-problem is self-contained or
-when two things can be researched in parallel; otherwise do it yourself.
-If async subagent tools are present (start_async_task, check_async_task,
-list_async_tasks), use them for long-running research you can poll later,
-and finish other work while they run. Subagents never write reports; you do.
-
-MANDATORY FINAL STEP: after you have composed your answer and before you
-reply, follow the report-writer skill and save a report to {REPORTS_PATH}
-with write_file. End your reply with the line
-"Report saved to {REPORTS_PATH}<file>.md".
-
-Your system prompt also ends with an <agent_memory> block loaded from
-AGENTS.md. Treat it as standing instructions."""
-
-model = build_model()
-backend = StateBackend()
-checkpointer = MemorySaver()
-
-code_interpreter = CodeInterpreterMiddleware(
-    timeout=5.0,
-    mode="thread",  # REPL globals persist across turns of the same thread
-    ptc=["internet_search"],  # callable from JS as tools.internetSearch({query: "..."})
-)
-
-agent = create_deep_agent(
-    model=model,
-    tools=[internet_search],
-    system_prompt=system_prompt,
-    backend=backend,
-    checkpointer=checkpointer,
-    skills=[SKILLS_PATH],
-    memory=[MEMORY_FILE],
-    middleware=[code_interpreter],
-    subagents=[*SYNC_SUBAGENTS, *async_subagents()],
-)
+# Default build (CLI, notebooks): everything on; async only if LANGGRAPH_SERVER_URL is set.
+agent = build_agent(async_server_url=os.getenv("LANGGRAPH_SERVER_URL"))
 
 
 def save_reports(files: dict, before: set[str]) -> list[Path]:
@@ -131,23 +203,17 @@ def save_reports(files: dict, before: set[str]) -> list[Path]:
     return saved
 
 
-def ask(question: str, thread_id: str = "default") -> str:
-    """Send one turn to the agent on `thread_id`, print the answer, persist reports.
-
-    The same `thread_id` keeps conversation history, files, and REPL state
-    between calls thanks to the MemorySaver checkpointer.
-    """
+def ask(question: str, thread_id: str = "default", agent_=None) -> str:
+    """Send one turn on `thread_id`, print the answer, persist reports."""
+    agent_ = agent_ or agent
     config = {"configurable": {"thread_id": thread_id}}
-    snapshot = agent.get_state(config)
-    before = {p for p in snapshot.values.get("files", {}) if p.startswith(REPORTS_PATH)}
-
-    result = agent.invoke(
+    before = {p for p in agent_.get_state(config).values.get("files", {}) if p.startswith(REPORTS_PATH)}
+    result = agent_.invoke(
         {"messages": [{"role": "user", "content": question}], "files": load_context_files()},
         config=config,
     )
     answer = result["messages"][-1].content
     print(answer)
-
     saved = save_reports(result.get("files", {}), before)
     if saved:
         print("\n[reports written]", ", ".join(str(p.relative_to(PROJECT_ROOT)) for p in saved))

@@ -9,6 +9,7 @@ should always know.
 - Install: `uv sync`
 - Keys go in `.env`: `GROQ_API_KEY`, `TAVILY_API_KEY`
 - Run the agent: `uv run deepagent.py "your question"` (also `uv run context_example.py`)
+- Chat UI: `uv run streamlit run app.py` (model, API key, temperature, and every feature are sidebar controls)
 - Skills live in `skills/<name>/` and are loaded via `create_deep_agent(skills=["/skills/"])`
 - Reports the agent writes go to `workspace/reports/`
 - The agent uses the Groq model `openai/gpt-oss-120b` and the `internet_search` tool (Tavily)
