@@ -15,28 +15,27 @@ Storage and context:
 - `CodeInterpreterMiddleware` - a sandboxed QuickJS `eval` tool for calculations
   and data wrangling; `internet_search` is callable from JS via
   `tools.internetSearch(...)`.
+- `subagents=[...]` - synchronous subagents (researcher, coder, critic) called
+  through the `task` tool, plus asynchronous subagents (remote_researcher,
+  remote_summarizer) that run as background jobs on a LangGraph server when
+  LANGGRAPH_SERVER_URL is set. See subagents.py.
 
 The `report-writer` skill is mandatory: after every answer the agent saves a
 markdown report to `/workspace/reports/` in state, and `ask()` copies it to
 `workspace/reports/` on disk.
 """
 
-import os
 from datetime import date
 from pathlib import Path
-from typing import Literal
 
-from dotenv import load_dotenv
-from langchain_groq import ChatGroq
 from langchain_quickjs import CodeInterpreterMiddleware
 from langgraph.checkpoint.memory import MemorySaver
-from tavily import TavilyClient
 
+from common import build_model, internet_search  # noqa: F401  (re-exported for context_example.py)
 from deepagents import create_deep_agent
 from deepagents.backends import StateBackend
 from deepagents.backends.utils import create_file_data
-
-load_dotenv()
+from subagents import SYNC_SUBAGENTS, async_subagents
 
 PROJECT_ROOT = Path(__file__).parent
 SKILLS_DIR = PROJECT_ROOT / "skills"
@@ -45,25 +44,6 @@ MEMORY_FILE = "/AGENTS.md"
 REPORTS_PATH = "/workspace/reports/"  # where the report-writer skill writes
 REPORTS_DIR = PROJECT_ROOT / "workspace" / "reports"
 REPORTS_DIR.mkdir(parents=True, exist_ok=True)
-
-# Reads TAVILY_API_KEY from the environment (.env)
-tavily_client = TavilyClient()
-
-
-def internet_search(
-    query: str,
-    max_results: int = 5,
-    topic: Literal["general", "news", "finance"] = "general",
-    include_raw_content: bool = False,
-):
-    """Run a web search and return the results."""
-    return tavily_client.search(
-        query,
-        max_results=max_results,
-        include_raw_content=include_raw_content,
-        topic=topic,
-    )
-
 
 def load_context_files() -> dict:
     """Read skills/ and AGENTS.md from disk into StateBackend file entries.
@@ -78,24 +58,6 @@ def load_context_files() -> dict:
             files[agent_path] = create_file_data(path.read_text(encoding="utf-8"))
     files[MEMORY_FILE] = create_file_data((PROJECT_ROOT / "AGENTS.md").read_text(encoding="utf-8"))
     return files
-
-
-def build_model():
-    """Pick the chat model from .env.
-
-    LLM_PROVIDER=groq   (default) -> ChatGroq(GROQ_MODEL or openai/gpt-oss-120b)
-    LLM_PROVIDER=openai           -> ChatOpenAI(OPENAI_MODEL or gpt-4.1)
-
-    Note: Groq's free tier allows 8,000 tokens per minute per request. A deep
-    agent with file tools, skills, memory, and the eval tool needs more than
-    that, so use a paid Groq tier or OpenAI for real runs.
-    """
-    provider = os.getenv("LLM_PROVIDER", "groq").lower()
-    if provider == "openai":
-        from langchain_openai import ChatOpenAI
-
-        return ChatOpenAI(model=os.getenv("OPENAI_MODEL", "gpt-4.1"))
-    return ChatGroq(model=os.getenv("GROQ_MODEL", "openai/gpt-oss-120b"))
 
 
 system_prompt = f"""You are an expert researcher and engineer.
@@ -114,6 +76,14 @@ You have an eval tool that runs JavaScript in a sandbox. Use it for
 arithmetic, date math, parsing or transforming data, and for looping over
 tools.internetSearch(...) calls when you need several searches at once.
 Never guess at a calculation you could run.
+
+You can delegate with the task tool. Available subagents: researcher
+(isolated web research), coder (Python/AWS code), critic (fork; reviews your
+draft with full context). Delegate when a sub-problem is self-contained or
+when two things can be researched in parallel; otherwise do it yourself.
+If async subagent tools are present (start_async_task, check_async_task,
+list_async_tasks), use them for long-running research you can poll later,
+and finish other work while they run. Subagents never write reports; you do.
 
 MANDATORY FINAL STEP: after you have composed your answer and before you
 reply, follow the report-writer skill and save a report to {REPORTS_PATH}
@@ -142,6 +112,7 @@ agent = create_deep_agent(
     skills=[SKILLS_PATH],
     memory=[MEMORY_FILE],
     middleware=[code_interpreter],
+    subagents=[*SYNC_SUBAGENTS, *async_subagents()],
 )
 
 

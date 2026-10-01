@@ -13,3 +13,8 @@ dependencies = [
     "python-dotenv",
     "langchain-quickjs>=0.3.7",
 ]
+
+[dependency-groups]
+dev = [
+    "langgraph-cli[inmem]>=0.4.32",
+]

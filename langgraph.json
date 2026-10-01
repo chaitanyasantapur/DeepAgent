@@ -1,0 +1,8 @@
+{
+  "dependencies": ["."],
+  "graphs": {
+    "research_agent": "./remote_agents.py:research_agent",
+    "summarizer_agent": "./remote_agents.py:summarizer_agent"
+  },
+  "env": ".env"
+}

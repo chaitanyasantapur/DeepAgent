@@ -47,5 +47,8 @@ Each skill folder has `SKILL.md` (frontmatter + quick rules), `instructions.md` 
 - System prompt assembly: your `system_prompt` first, then harness profile text, then the `<agent_memory>` block built from the `memory=[...]` files
 - Backends decide where file tools store data: `StateBackend` (per-thread state, default), `FilesystemBackend` (real disk under `root_dir`), `StoreBackend` (LangGraph store, shared across threads), `CompositeBackend` (route by path prefix)
 - Context protection: tool results over 20k tokens are saved to `/large_tool_results/<id>` and replaced with a stub; when history nears the model limit older messages are summarized and saved to `/conversation_history/<session>.md`
-- Subagents are isolated by default: they get only the task text and return only their final answer to the parent
+- Subagents are isolated by default: they get only the task text and return only their final answer to the parent. `mode="fork"` subagents continue the parent's conversation instead
+- This project's sync subagents (`task` tool): `researcher` (isolated, web research), `coder` (isolated, Python/AWS), `critic` (fork, reviews the draft)
+- Async subagents (`start_async_task` / `check_async_task` / `list_async_tasks` / `update_async_task` / `cancel_async_task`): `remote_researcher` and `remote_summarizer`, background runs on the LangGraph server started with `uv run langgraph dev`; only present when `LANGGRAPH_SERVER_URL` is set
+- Subagents never write reports; the main agent writes the report after every answer
 - Memory files are read on every invocation, so edits to this file take effect on the next call

@@ -32,7 +32,10 @@ uv run jupyter lab deepagent.ipynb      # or open in VS Code and pick the kernel
 
 ## Files
 
-- `deepagent.py` - Tavily `internet_search` tool + `create_deep_agent` with skills, AGENTS.md memory, `StateBackend`, `MemorySaver` checkpointer, and a QuickJS `eval` tool (`CodeInterpreterMiddleware` from `langchain-quickjs`)
+- `deepagent.py` - `create_deep_agent` with skills, AGENTS.md memory, `StateBackend`, `MemorySaver` checkpointer, a QuickJS `eval` tool (`CodeInterpreterMiddleware` from `langchain-quickjs`), and sync + async subagents
+- `common.py` - shared `internet_search` (Tavily) tool and `build_model()`
+- `subagents.py` - synchronous `SubAgent` specs (researcher, coder, critic) and async `AsyncSubAgent` specs (remote_researcher, remote_summarizer)
+- `remote_agents.py` + `langgraph.json` - the graphs served by `langgraph dev` that back the async subagents
 - `deepagent.ipynb` - same code split into cells
 - `requirements.txt` / `pyproject.toml` - dependencies
 
@@ -99,3 +102,48 @@ Groq's free tier allows 8,000 tokens per minute and rejects any single request a
 that. A deep agent with file tools, skills, memory, and the eval tool sends more than
 8,000 tokens per model call, so skills-enabled runs need a paid Groq tier or `LLM_PROVIDER=openai` with a
 real `OPENAI_API_KEY`.
+
+## Subagents
+
+### Synchronous (in-process, via the `task` tool)
+
+Defined in `subagents.py` and passed as `create_deep_agent(subagents=[...])`. The parent
+blocks until the subagent returns its final message.
+
+| Name | Mode | What it does |
+|---|---|---|
+| `researcher` | isolated | Web research with `internet_search` and the web-research skill. Sees only the task text. |
+| `coder` | isolated | Python / AWS code and reviews using the python and aws skills. Sees only the task text. |
+| `critic` | fork | Continues the parent's conversation to review the draft answer. Sees full history. Experimental in deepagents 0.7.x. |
+
+Isolated subagents get a fresh context with their own `system_prompt`, the parent's tools,
+and the skills listed in their spec. Fork subagents inherit the parent's prompt and history
+and cannot declare their own skills.
+
+### Asynchronous (background runs on a LangGraph server)
+
+Async subagents are `AsyncSubAgent` specs pointing at graphs on an Agent Protocol server.
+The parent gets `start_async_task`, `check_async_task`, `update_async_task`,
+`cancel_async_task`, and `list_async_tasks`, and keeps working while the remote run proceeds.
+Task IDs are stored in the parent's state under `async_tasks`.
+
+The graphs live in `remote_agents.py` and are registered in `langgraph.json`:
+
+- `research_agent` -> subagent `remote_researcher`
+- `summarizer_agent` -> subagent `remote_summarizer`
+
+Run them locally (dev dependency `langgraph-cli[inmem]` is already installed):
+
+```bash
+uv run langgraph dev --no-browser --port 2024     # terminal 1
+```
+
+Then add to `.env` and run the main agent:
+
+```
+LANGGRAPH_SERVER_URL=http://127.0.0.1:2024
+```
+
+Without `LANGGRAPH_SERVER_URL` the async subagents are not registered, so the agent still
+works with sync subagents only. Point the URL at a LangGraph Platform deployment to run the
+same specs remotely (the SDK picks up `LANGSMITH_API_KEY` for auth).
