@@ -37,6 +37,7 @@ agent = create_deep_agent(
     tools=[internet_search],
     system_prompt=system_prompt,
     backend=backend,
+    skills=["/skills/"],
     memory=["/AGENTS.md"],
 )
 

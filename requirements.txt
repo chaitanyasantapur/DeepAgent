@@ -5,3 +5,4 @@ langchain-groq
 ipykernel
 tavily-python
 python-dotenv
+langchain-quickjs

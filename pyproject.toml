@@ -11,4 +11,5 @@ dependencies = [
     "ipykernel",
     "tavily-python",
     "python-dotenv",
+    "langchain-quickjs>=0.3.7",
 ]
